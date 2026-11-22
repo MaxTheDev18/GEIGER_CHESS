@@ -56,6 +56,12 @@ input{width:100%}
   <h1>♞ Chess Online</h1>
   <p class="sub">Play a friend anywhere, or share a board.</p>
   <div class="card"><h2>Your name</h2><input id="name" maxlength="16" placeholder="Name"></div>
+  <div class="card" id="authCard"><h2>Account</h2>
+    <div id="authOut"><input id="email" type="email" autocomplete="email" placeholder="Email"><input id="pw" type="password" autocomplete="current-password" placeholder="Password (6+ characters)" style="margin-top:8px">
+    <div class="row" style="margin-top:8px"><button class="pri" id="signin">Sign in</button><button id="signup">Create account</button></div>
+    <p style="margin:8px 0 0"><button id="forgot" style="border:0;background:none;padding:0;min-height:0;text-decoration:underline;color:var(--mut);font-size:.9rem">Forgot password?</button></p></div>
+    <div id="authIn" class="hide"><div class="row" style="align-items:center"><span id="who" class="mut" style="flex:2;overflow:hidden;text-overflow:ellipsis"></span><button id="signout">Sign out</button></div></div>
+  </div>
   <div class="card"><h2>Play online</h2>
     <div class="row"><button class="pri" id="create">Create game</button></div>
     <p class="mut" style="margin:10px 0 6px">Have a code from a friend?</p>
@@ -185,12 +191,46 @@ function peers(list){const o=list.filter(p=>!p.isMe&&p.presence&&p.presence.name
  for(const p of o){const r=document.createElement('div');r.className='peer';const n=document.createElement('span');n.textContent=String(p.presence.name).slice(0,16);r.append(n);
   if(p.presence.code){const b=document.createElement('button');b.className='pri';b.textContent='Join game';b.onclick=()=>join(String(p.presence.code));r.append(b)}
   else{const s=document.createElement('span');s.className='mut';s.textContent='online';r.append(s)}box.append(r)}}
-(async()=>{try{
- const u=await window.claude?.use('user');if(u&&u.id)uid=await u.id();
- db=(await window.claude?.use('db'))||null;
- $('#onlineNote').textContent=db?'':'Online play needs you to be signed in to claude.ai.';
- room=(await window.claude?.use('room'))||null;
- if(room){room.onPeers(c=>peers(c.peers));pres();peers(room.peers())}else $('#peers').textContent='Lobby unavailable. Use a game code or invite link.';
- const h=location.hash.slice(1).toUpperCase();if(/^[A-Z]{5}$/.test(h)&&db)join(h);
-}catch(e){$('#onlineNote').textContent='Online features unavailable here.'}})();
-</script></body></html>
+
+</script>
+<script type="module">
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import{getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,updateProfile}from"https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import{getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,onSnapshot,collection}from"https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+// >>> PUT YOUR FIREBASE PROJECT ID HERE (Project settings > General > Project ID)
+const PROJECT_ID="geigerchess";
+const cfg={apiKey:"AIzaSyCM6fyMIZbhHIZi_DkEpKlpQbTLREvXsE0",authDomain:PROJECT_ID+".firebaseapp.com",projectId:PROJECT_ID};
+const Q=s=>document.querySelector(s),note=t=>{Q('#onlineNote').textContent=t};
+const E={'auth/invalid-credential':'Wrong email or password.','auth/invalid-email':'That email does not look right.','auth/email-already-in-use':'That email already has an account. Try Sign in.','auth/weak-password':'Password needs at least 6 characters.','auth/missing-password':'Enter a password.','auth/too-many-requests':'Too many tries. Wait a bit.','auth/operation-not-allowed':'Turn on Email/Password in Firebase Authentication.'};
+const et=e=>E[e.code]||('Error: '+(e.code||e.message));
+if(PROJECT_ID===""){note("Setup needed: put your Firebase project ID in this file.");Q('#peers').textContent="Online lobby is off until Firebase is set up."}
+else{
+ const app=initializeApp(cfg),auth=getAuth(app),fs=getFirestore(app);
+ let lob=null,unsub2=null,timers=[];
+ note("Sign in to play online.");Q('#peers').textContent="Sign in to see who is online.";
+ const val=()=>[Q('#email').value.trim(),Q('#pw').value];
+ Q('#signin').onclick=()=>signInWithEmailAndPassword(auth,...val()).catch(e=>toast(et(e)));
+ Q('#signup').onclick=async()=>{try{const c=await createUserWithEmailAndPassword(auth,...val());await updateProfile(c.user,{displayName:nm()})}catch(e){toast(et(e))}};
+ Q('#forgot').onclick=async()=>{const em=Q('#email').value.trim();if(!em)return toast('Enter your email first');try{await sendPasswordResetEmail(auth,em);toast('Reset email sent')}catch(e){toast(et(e))}};
+ Q('#signout').onclick=async()=>{if(lob)await deleteDoc(lob).catch(()=>{});signOut(auth)};
+ const off=()=>{timers.forEach(clearInterval);timers=[];if(unsub2){unsub2();unsub2=null}lob=null;db=null;room=null;if(G&&G.mode==='online')leave();$('#cnt').textContent='';Q('#peers').textContent="Sign in to see who is online.";note("Sign in to play online.")};
+ onAuthStateChanged(auth,user=>{
+  Q('#authOut').classList.toggle('hide',!!user);Q('#authIn').classList.toggle('hide',!user);
+  if(!user){off();return}
+  Q('#who').textContent='Signed in as '+user.email;if(user.displayName)Q('#name').value=user.displayName;
+  uid=user.uid;note("");
+  db={collection:c=>({doc:id=>{const r=doc(fs,c,id),sn=s=>({exists:s.exists(),data:()=>s.data()});
+   return{get:async()=>sn(await getDoc(r)),set:o=>setDoc(r,o),update:o=>updateDoc(r,o),onSnapshot:(f,e)=>onSnapshot(r,s=>f(sn(s)),e)}}})};
+  lob=doc(fs,'lobby',uid);let me={name:nm(),code:null},cur=[];
+  const beat=()=>lob&&setDoc(lob,{name:me.name,code:me.code||'',ts:Date.now()}).catch(()=>{});
+  room={presence:async p=>{me=p;await beat()}};
+  const render=()=>peers(cur.filter(p=>Date.now()-p.ts<60000).map(p=>({isMe:p.id===uid,presence:{name:p.name,code:p.code||null}})));
+  unsub2=onSnapshot(collection(fs,'lobby'),s=>{cur=s.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{});
+  timers=[setInterval(render,15000),setInterval(beat,20000)];
+  pres();
+  const h=location.hash.slice(1).toUpperCase();if(/^[A-Z]{5}$/.test(h)&&!G)join(h)});
+ addEventListener('pagehide',()=>{if(lob)deleteDoc(lob).catch(()=>{})});
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&lob)setDoc(lob,{ts:Date.now()},{merge:true}).catch(()=>{})});
+}
+</script>
+</body></html>
